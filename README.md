@@ -1,6 +1,6 @@
 # Classificação de imagens com deep learning e TensorFlow
 
-## Instale o docker
+## Baixe e Instale o docker 
 
     docker run hello-world
 
@@ -36,6 +36,8 @@ Estes são alguns exemplos de como utilizar isso no mundo real, e lembre-se de q
 
 ## Fonte
 https://imasters.com.br/back-end/classificacao-de-imagens-com-deep-learning-e-tensorflow
+https://www.tensorflow.org/tutorials/images/transfer_learning?hl=en
+https://www.tensorflow.org/tutorials/keras/save_and_load?hl=pt-br#save_the_entire_model
 
 ## ERRO
 

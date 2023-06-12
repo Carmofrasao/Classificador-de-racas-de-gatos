@@ -1,36 +1,58 @@
-import os, sys
-
+import matplotlib.pyplot as plt
+import numpy as np
+import os
 import tensorflow as tf
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+#========================================================================================
+# Restore the model
+model = tf.keras.models.load_model('cats-vs-dogs.h5')
 
-# change this as you see fit
-image_path = sys.argv[1]
+_URL = 'https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip'
+path_to_zip = tf.keras.utils.get_file('cats_and_dogs.zip', origin=_URL, extract=True)
+PATH = os.path.join(os.path.dirname(path_to_zip), 'cats_and_dogs_filtered')
 
-# Read in the image_data
-image_data = tf.gfile.FastGFile(image_path, 'rb').read()
+train_dir = os.path.join(PATH, 'train')
+validation_dir = os.path.join(PATH, 'validation')
 
-# Loads label file, strips off carriage return
-label_lines = [line.rstrip() for line 
-                   in tf.gfile.GFile("retrained_labels.txt")]
+BATCH_SIZE = 32
+IMG_SIZE = (160, 160)
 
-# Unpersists graph from file
-with tf.gfile.FastGFile("retrained_graph.pb", 'rb') as f:
-    graph_def = tf.GraphDef()
-    graph_def.ParseFromString(f.read())
-    tf.import_graph_def(graph_def, name='')
+train_dataset = tf.keras.utils.image_dataset_from_directory(train_dir,
+                                                            shuffle=True,
+                                                            batch_size=BATCH_SIZE,
+                                                            image_size=IMG_SIZE)
 
-with tf.Session() as sess:
-    # Feed the image_data as input to the graph and get first prediction
-    softmax_tensor = sess.graph.get_tensor_by_name('final_result:0')
-    
-    predictions = sess.run(softmax_tensor, \
-             {'DecodeJpeg/contents:0': image_data})
-    
-    # Sort to show labels of first prediction in order of confidence
-    top_k = predictions[0].argsort()[-len(predictions[0]):][::-1]
-    
-    for node_id in top_k:
-        human_string = label_lines[node_id]
-        score = predictions[0][node_id]
-        print('%s (score = %.5f)' % (human_string, score))
+validation_dataset = tf.keras.utils.image_dataset_from_directory(validation_dir,
+                                                                 shuffle=True,
+                                                                 batch_size=BATCH_SIZE,
+                                                                 image_size=IMG_SIZE)
+
+class_names = train_dataset.class_names
+
+#Creating the test dataset, moving 20% of the validation set to the test set.
+val_batches = tf.data.experimental.cardinality(validation_dataset)
+test_dataset = validation_dataset.take(val_batches // 5)
+validation_dataset = validation_dataset.skip(val_batches // 5)
+
+# Verify the performance of the model on new data using test set.
+loss, accuracy = model.evaluate(test_dataset)
+print('Test accuracy :', accuracy)
+
+# Retrieve a batch of images from the test set
+image_batch, label_batch = test_dataset.as_numpy_iterator().next()
+predictions = model.predict_on_batch(image_batch).flatten()
+
+# Apply a sigmoid since our model returns logits
+predictions = tf.nn.sigmoid(predictions)
+predictions = tf.where(predictions < 0.5, 0, 1)
+
+print('Predictions:\n', predictions.numpy())
+print('Labels:\n', label_batch)
+
+plt.figure(figsize=(10, 10))
+for i in range(9):
+  ax = plt.subplot(3, 3, i + 1)
+  plt.imshow(image_batch[i].astype("uint8"))
+  plt.title(class_names[predictions[i]])
+  plt.axis("off")
+plt.show()
