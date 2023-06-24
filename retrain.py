@@ -1,140 +1,108 @@
-# MIT License
-#
-# Copyright (c) 2017 François Chollet                                                                                                                    # IGNORE_COPYRIGHT: cleared by OSS licensing
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-#Code based on the tutorial: https://www.tensorflow.org/tutorials/images/transfer_learning?hl=en
-
-import matplotlib.pyplot as plt
 import numpy as np
-import os
+import time
+
+import PIL.Image as Image
+import matplotlib.pylab as plt
+
 import tensorflow as tf
+import tensorflow_hub as hub
 
-#========================================================================================
-#Download and extract a zip file containing the images, then create a tf.data.Dataset 
-#for training and validation using the tf.keras.utils.image_dataset_from_directory utility.
+import datetime
 
-_URL = 'https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip'
-path_to_zip = tf.keras.utils.get_file('cats_and_dogs.zip', origin=_URL, extract=True)
-PATH = os.path.join(os.path.dirname(path_to_zip), 'cats_and_dogs_filtered')
+# ================================Prepare dataset to retrain================================
+data_root = '/home/venkopad/faculdade/trab-5-visao/cats'
 
-train_dir = os.path.join(PATH, 'train')
-validation_dir = os.path.join(PATH, 'validation')
+batch_size = 32
+img_height = 224
+img_width = 224
 
-BATCH_SIZE = 32
-IMG_SIZE = (160, 160)
+#First, load this data into the model using the image data off disk with 
+# tf.keras.utils.image_dataset_from_directory, which will generate a tf.data.Dataset:
+train_ds = tf.keras.utils.image_dataset_from_directory(
+  str(data_root),
+  validation_split=0.2,
+  subset="training",
+  seed=123,
+  image_size=(img_height, img_width),
+  batch_size=batch_size
+)
 
-train_dataset = tf.keras.utils.image_dataset_from_directory(train_dir,
-                                                            shuffle=True,
-                                                            batch_size=BATCH_SIZE,
-                                                            image_size=IMG_SIZE)
+val_ds = tf.keras.utils.image_dataset_from_directory(
+  str(data_root),
+  validation_split=0.2,
+  subset="validation",
+  seed=123,
+  image_size=(img_height, img_width),
+  batch_size=batch_size
+)
 
-validation_dataset = tf.keras.utils.image_dataset_from_directory(validation_dir,
-                                                                 shuffle=True,
-                                                                 batch_size=BATCH_SIZE,
-                                                                 image_size=IMG_SIZE)
+#List the names of classes encountered
+class_names = np.array(train_ds.class_names)
 
-class_names = train_dataset.class_names
+#Second, because TensorFlow Hub's convention for image models is to expect float 
+# inputs in the [0, 1] range, use the tf.keras.layers.Rescaling preprocessing layer to achieve this.
+normalization_layer = tf.keras.layers.Rescaling(1./255)
+train_ds = train_ds.map(lambda x, y: (normalization_layer(x), y)) # Where x—images, y—labels.
+val_ds = val_ds.map(lambda x, y: (normalization_layer(x), y)) # Where x—images, y—labels.
 
-#Creating the test dataset, moving 20% of the validation set to the test set.
-val_batches = tf.data.experimental.cardinality(validation_dataset)
-test_dataset = validation_dataset.take(val_batches // 5)
-validation_dataset = validation_dataset.skip(val_batches // 5)
-
-print('Number of validation batches: %d' % tf.data.experimental.cardinality(validation_dataset))
-print('Number of test batches: %d' % tf.data.experimental.cardinality(test_dataset))
-
+#Third, finish the input pipeline by using buffered prefetching 
+# with Dataset.prefetch, so you can yield the data from disk without I/O blocking issues.
 AUTOTUNE = tf.data.AUTOTUNE
+train_ds = train_ds.cache().prefetch(buffer_size=AUTOTUNE)
+val_ds = val_ds.cache().prefetch(buffer_size=AUTOTUNE)
+for image_batch, labels_batch in train_ds:
+  print(image_batch.shape)
+  print(labels_batch.shape)
+  break
 
-#Configure the dataset for performance
-# use buffered prefetching to load images from disk without having I/O become blocking.
-train_dataset = train_dataset.prefetch(buffer_size=AUTOTUNE)
-validation_dataset = validation_dataset.prefetch(buffer_size=AUTOTUNE)
-test_dataset = test_dataset.prefetch(buffer_size=AUTOTUNE)
+# ================================Download and prepare model================================
+# Classifier model ho will be retrained
+mobilenet_v2 ="https://tfhub.dev/google/tf2-preview/mobilenet_v2/classification/4"
 
-data_augmentation = tf.keras.Sequential([
-  tf.keras.layers.RandomFlip('horizontal'),
-  tf.keras.layers.RandomRotation(0.2),
+IMAGE_SHAPE = (224, 224)
+
+#Create the feature extractor by wrapping the pre-trained model as a Keras layer with hub.KerasLayer. Use the trainable=False 
+# argument to freeze the variables, so that the training only modifies the new classifier layer:
+feature_extractor_layer = hub.KerasLayer(
+    mobilenet_v2,
+    input_shape=(224, 224, 3),
+    trainable=False)
+
+#Attach a classification head: To complete the model, wrap the feature extractor layer in a tf.keras.Sequential 
+# model and add a fully-connected layer for classification:
+num_classes = len(class_names)
+
+model = tf.keras.Sequential([
+  feature_extractor_layer,
+  tf.keras.layers.Dense(num_classes)
 ])
 
-#Rescale pixel values
-preprocess_input = tf.keras.applications.mobilenet_v2.preprocess_input
-rescale = tf.keras.layers.Rescaling(1./127.5, offset=-1)
+#Shows model appearence
+model.summary()
 
-#========================================================================================
-# Create the base model from the pre-trained model MobileNet V2
-IMG_SHAPE = IMG_SIZE + (3,)
-base_model = tf.keras.applications.MobileNetV2(input_shape=IMG_SHAPE,
-                                               include_top=False,
-                                               weights='imagenet')
+# ================================Train the model================================
+#Use Model.compile to configure the training process and add a tf.keras.callbacks.TensorBoard callback to create and store logs:
+model.compile(
+  optimizer=tf.keras.optimizers.Adam(),
+  loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+  metrics=['acc'])
 
-image_batch, label_batch = next(iter(train_dataset))
-feature_batch = base_model(image_batch)
-print(feature_batch.shape)
+log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+tensorboard_callback = tf.keras.callbacks.TensorBoard(
+    log_dir=log_dir,
+    histogram_freq=1) # Enable histogram computation for every epoch.
 
-#Freezing the convolutional base
-base_model.trainable = False
+NUM_EPOCHS = 10
 
-#Add a classification head
-global_average_layer = tf.keras.layers.GlobalAveragePooling2D()
-feature_batch_average = global_average_layer(feature_batch)
-print(feature_batch_average.shape)
-
-#convert these features into a single prediction per image
-prediction_layer = tf.keras.layers.Dense(1)
-prediction_batch = prediction_layer(feature_batch_average)
-print(prediction_batch.shape)
-
-#Build a model by chaining together the data augmentation, rescaling, 
-# base_model and feature extractor layers using the Keras Functional API.
-inputs = tf.keras.Input(shape=(160, 160, 3))
-x = data_augmentation(inputs)
-x = preprocess_input(x)
-x = base_model(x, training=False)
-x = global_average_layer(x)
-x = tf.keras.layers.Dropout(0.2)(x)
-outputs = prediction_layer(x)
-model = tf.keras.Model(inputs, outputs)
-
-
-#========================================================================================
-#Compile the model
-base_learning_rate = 0.0001
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=base_learning_rate),
-              loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-              metrics=['accuracy'])
-
-#Train the model
-initial_epochs = 10
-loss0, accuracy0 = model.evaluate(validation_dataset)
-
-print("initial loss: {:.2f}".format(loss0))
-print("initial accuracy: {:.2f}".format(accuracy0))
-
-history = model.fit(train_dataset,
-                    epochs=initial_epochs,
-                    validation_data=validation_dataset)
+#Start training
+history = model.fit(train_ds,
+                    validation_data=val_ds,
+                    epochs=NUM_EPOCHS,
+                    callbacks=tensorboard_callback)
 
 #Plot learning curves
-acc = history.history['accuracy']
-val_acc = history.history['val_accuracy']
+acc = history.history['acc']
+val_acc = history.history['val_acc']
 
 loss = history.history['loss']
 val_loss = history.history['val_loss']
@@ -158,30 +126,26 @@ plt.title('Training and Validation Loss')
 plt.xlabel('epoch')
 plt.show()
 
-#========================================================================================
-# Save the model
-model.save('cats-vs-dogs.h5')
+#Saves the model
+export_path = "retrained/saved_models/cat_breads"
+model.save(export_path)
 
-# Verify the performance of the model on new data using test set.
-loss, accuracy = model.evaluate(test_dataset)
-print('Test accuracy :', accuracy)
+# ================================Check the predictions================================
+#Obtain the ordered list of class names from the model predictions:
+predicted_batch = model.predict(image_batch)
+predicted_id = tf.math.argmax(predicted_batch, axis=-1)
+predicted_label_batch = class_names[predicted_id]
 
-# Retrieve a batch of images from the test set
-image_batch, label_batch = test_dataset.as_numpy_iterator().next()
-predictions = model.predict_on_batch(image_batch).flatten()
+#Plot the model predictions:
 
-# Apply a sigmoid since our model returns logits
-predictions = tf.nn.sigmoid(predictions)
-predictions = tf.where(predictions < 0.5, 0, 1)
+plt.figure(figsize=(10,9))
+plt.subplots_adjust(hspace=0.5)
 
-print('Predictions:\n', predictions.numpy())
-print('Labels:\n', label_batch)
+for n in range(30):
+  plt.subplot(6,5,n+1)
+  plt.imshow(image_batch[n])
+  plt.title(predicted_label_batch[n].title())
+  plt.axis('off')
+_ = plt.suptitle("Model predictions")
 
-plt.figure(figsize=(10, 10))
-for i in range(9):
-  ax = plt.subplot(3, 3, i + 1)
-  plt.imshow(image_batch[i].astype("uint8"))
-  plt.title(class_names[predictions[i]])
-  plt.axis("off")
 plt.show()
-
