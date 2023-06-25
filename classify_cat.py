@@ -8,7 +8,7 @@ if len(sys.argv) < 2:
     print("SINTAX ERROR: python3 classify_cat.py <IMAGE_NAME>")
     exit(0)
 
-data_root = '/home/venkopad/faculdade/trab-5-visao/cats'
+data_root = './cats'
 
 batch_size = 32
 img_height = 224
