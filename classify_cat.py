@@ -52,8 +52,5 @@ predicted_labels = class_names[predicted_class]
 
 plt.imshow(little_cat)
 plt.axis('off')
-predicted_class_name = predicted_labels[predicted_class]
-_ = plt.title("Prediction: " + predicted_class_name.title())
+_ = plt.title("Prediction: " + predicted_labels)
 plt.show()
-
-
